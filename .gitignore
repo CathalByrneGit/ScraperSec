@@ -2,7 +2,18 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
-data/
+
+# Generated pipeline data — exclude bulk downloads and raw filings
+data/submissions.zip
+data/RAW_FILINGS/
+data/INDICES/
+data/smoke/
+data/*.csv.tmp
+
+# Sample outputs are committed (small, useful for review)
+!data/sample_dataset.csv
+!data/sample_dataset.jsonl
+
 *.egg-info/
 dist/
 build/
