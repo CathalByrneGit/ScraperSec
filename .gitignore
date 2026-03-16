@@ -14,6 +14,7 @@ data/*.csv.tmp
 !data/sample_dataset.csv
 !data/sample_dataset.jsonl
 
+edgar-crawler/
 *.egg-info/
 dist/
 build/
