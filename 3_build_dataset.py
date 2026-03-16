@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 DEFAULT_EXTRACTED_DIR = Path("data/EXTRACTED_FILINGS")
 DEFAULT_METADATA_PATH = Path("data/cik_metadata.jsonl")
 DEFAULT_OUTPUT_PATH   = Path("data/dataset.jsonl")
-DEFAULT_BATCH_SIZE    = 1
+DEFAULT_BATCH_SIZE    = 8   # matches GLiNER2's internal default; increase to 16-32 if memory allows
 
 # GLiNER2 will search this many characters of Item 1.
 # Item 1 is already pre-extracted so we don't need 8k of boilerplate —
@@ -127,15 +127,26 @@ def get_item1_text(filing: dict) -> Optional[str]:
 
 def process_batch(batch: list, nace_map: dict, metadata: dict) -> list:
     """
-    Extract descriptions for a batch of (cik, filing, item1_text) tuples and
-    return a list of output records.
+    Extract descriptions for a batch of (cik, filing, item1_text) tuples using
+    GLiNER2's vectorised batch_extract_json(), which runs a single encoder
+    forward pass over all texts rather than one pass per filing.
 
-    Structured for easy upgrade to a GLiNER2 batch API when one becomes
-    available — swap the inner loop for a vectorised call.
+    batch_extract_json() is the underlying method that all single-text helpers
+    wrap (extract_json calls batch_extract([text], ..., batch_size=1)[0]).
+    Calling it directly for N texts saves N-1 encoder forward passes.
     """
+    if not batch:
+        return []
+
+    texts = [item1[:EXTRACTION_CHARS] for _, _, item1 in batch]
+    raw_results = _get_extractor().batch_extract_json(texts, SCHEMA)
+
     records = []
-    for cik, filing, item1 in batch:
-        description = extract_description(item1)
+    for (cik, filing, _), result in zip(batch, raw_results):
+        company_entries = result.get("company", [])
+        if not company_entries:
+            continue
+        description = company_entries[0].get("description", "").strip()
         if not description:
             continue
         meta = metadata.get(cik, {})
