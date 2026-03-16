@@ -1,0 +1,24 @@
+
+  "download_filings": {
+    "start_year": 2022,
+    "end_year": 2024,
+    "quarters": [1, 2, 3, 4],
+    "filing_types": ["10-K"],
+    "cik_tickers": "data/cik_list.txt",
+    "user_agent": "YourName yourname@example.com",
+    "raw_filings_folder": "data/RAW_FILINGS",
+    "indices_folder": "data/INDICES",
+    "filings_metadata_file": "data/filings_metadata.csv",
+    "skip_present_indices": true
+  },
+  "extract_items": {
+    "raw_filings_folder": "data/RAW_FILINGS",
+    "extracted_filings_folder": "data/EXTRACTED_FILINGS",
+    "filings_metadata_file": "data/filings_metadata.csv",
+    "filing_types": ["10-K"],
+    "include_signature": false,
+    "items_to_extract": ["1"],
+    "remove_tables": true,
+    "skip_extracted_filings": true
+  }
+}
