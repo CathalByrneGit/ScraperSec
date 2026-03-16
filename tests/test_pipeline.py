@@ -317,11 +317,19 @@ class TestExtractDescription:
 # ---------------------------------------------------------------------------
 
 class TestProcessBatch:
-    def test_returns_records_for_valid_batch(self, dataset_mod):
+    """process_batch uses batch_extract_json (returns a list, one dict per text)."""
+
+    def _mock_batch(self, descriptions: list):
+        """Return a mock extractor whose batch_extract_json yields the given descriptions."""
         mock_extractor = MagicMock()
-        mock_extractor.extract_json.return_value = {
-            "company": [{"description": "A tech company."}]
-        }
+        mock_extractor.batch_extract_json.return_value = [
+            {"company": [{"description": d}]} if d else {"company": []}
+            for d in descriptions
+        ]
+        return mock_extractor
+
+    def test_returns_records_for_valid_batch(self, dataset_mod):
+        mock_extractor = self._mock_batch(["A tech company."])
         batch = [
             ("123",
              {"filing_type": "10-K", "filing_date": "2023-01-01",
@@ -337,28 +345,21 @@ class TestProcessBatch:
         assert records[0]["description"] == "A tech company."
 
     def test_skips_items_with_no_description(self, dataset_mod):
-        mock_extractor = MagicMock()
-        mock_extractor.extract_json.return_value = {"company": []}
+        mock_extractor = self._mock_batch([None])  # empty company list
         batch = [("999", {}, "text " * 30)]
         with patch.object(dataset_mod, "_get_extractor", return_value=mock_extractor):
             records = dataset_mod.process_batch(batch, {}, {})
         assert records == []
 
     def test_applies_nace_map(self, dataset_mod):
-        mock_extractor = MagicMock()
-        mock_extractor.extract_json.return_value = {
-            "company": [{"description": "desc"}]
-        }
+        mock_extractor = self._mock_batch(["desc"])
         batch = [("1", {"sic": "3571"}, "text " * 30)]
         with patch.object(dataset_mod, "_get_extractor", return_value=mock_extractor):
             records = dataset_mod.process_batch(batch, {"3571": "C26.20"}, {})
         assert records[0]["nace_code"] == "C26.20"
 
     def test_missing_nace_map_entry_gives_none(self, dataset_mod):
-        mock_extractor = MagicMock()
-        mock_extractor.extract_json.return_value = {
-            "company": [{"description": "desc"}]
-        }
+        mock_extractor = self._mock_batch(["desc"])
         batch = [("1", {"sic": "9999"}, "text " * 30)]
         with patch.object(dataset_mod, "_get_extractor", return_value=mock_extractor):
             records = dataset_mod.process_batch(batch, {"3571": "C26.20"}, {})
@@ -368,6 +369,32 @@ class TestProcessBatch:
         records = dataset_mod.process_batch([], {}, {})
         assert records == []
 
+    def test_uses_batch_api_not_single_call(self, dataset_mod):
+        """Verify batch_extract_json is called once for the whole batch, not per item."""
+        mock_extractor = self._mock_batch(["desc A", "desc B", "desc C"])
+        batch = [
+            (str(i), {}, f"Company {i} makes things. " * 10)
+            for i in range(3)
+        ]
+        with patch.object(dataset_mod, "_get_extractor", return_value=mock_extractor):
+            records = dataset_mod.process_batch(batch, {}, {})
+        assert mock_extractor.batch_extract_json.call_count == 1
+        assert len(records) == 3
+
+    def test_truncates_texts_to_extraction_chars(self, dataset_mod):
+        """Texts longer than EXTRACTION_CHARS are truncated before batch call."""
+        captured = []
+        mock_extractor = MagicMock()
+        def capture(texts, schema):
+            captured.extend(texts)
+            return [{"company": [{"description": "d"}]}]
+        mock_extractor.batch_extract_json.side_effect = capture
+
+        long_text = "x" * 10_000
+        with patch.object(dataset_mod, "_get_extractor", return_value=mock_extractor):
+            dataset_mod.process_batch([("1", {}, long_text)], {}, {})
+        assert len(captured[0]) == dataset_mod.EXTRACTION_CHARS
+
 
 # ---------------------------------------------------------------------------
 # 3_build_dataset — build_dataset (end-to-end with mocked model)
@@ -376,6 +403,14 @@ class TestProcessBatch:
 class TestBuildDataset:
     def _write_filing(self, path: Path, data: dict):
         path.write_text(json.dumps(data))
+
+    def _mock_extractor(self, description: str = "desc"):
+        """Return a mock whose batch_extract_json returns one result per text."""
+        mock_extractor = MagicMock()
+        mock_extractor.batch_extract_json.side_effect = lambda texts, schema: [
+            {"company": [{"description": description}]} for _ in texts
+        ]
+        return mock_extractor
 
     def test_creates_output_jsonl(self, dataset_mod, tmp_path):
         filing_dir = tmp_path / "filings"
@@ -389,11 +424,8 @@ class TestBuildDataset:
             "htm_filing_link": "https://sec.gov/x",
         })
 
-        mock_extractor = MagicMock()
-        mock_extractor.extract_json.return_value = {
-            "company": [{"description": "Apple makes iPhones."}]
-        }
-        with patch.object(dataset_mod, "_get_extractor", return_value=mock_extractor):
+        with patch.object(dataset_mod, "_get_extractor",
+                          return_value=self._mock_extractor("Apple makes iPhones.")):
             dataset_mod.build_dataset(
                 extracted_dir=filing_dir,
                 metadata_path=tmp_path / "nonexistent.jsonl",
@@ -424,11 +456,8 @@ class TestBuildDataset:
         # Pre-populate: CIK 111 already done
         output.write_text(json.dumps({"cik": "111", "description": "pre-existing"}) + "\n")
 
-        mock_extractor = MagicMock()
-        mock_extractor.extract_json.return_value = {
-            "company": [{"description": "desc"}]
-        }
-        with patch.object(dataset_mod, "_get_extractor", return_value=mock_extractor):
+        with patch.object(dataset_mod, "_get_extractor",
+                          return_value=self._mock_extractor()):
             dataset_mod.build_dataset(
                 extracted_dir=filing_dir,
                 metadata_path=tmp_path / "meta.jsonl",
@@ -456,11 +485,8 @@ class TestBuildDataset:
                 "htm_filing_link": "",
             })
 
-        mock_extractor = MagicMock()
-        mock_extractor.extract_json.return_value = {
-            "company": [{"description": "desc"}]
-        }
-        with patch.object(dataset_mod, "_get_extractor", return_value=mock_extractor):
+        with patch.object(dataset_mod, "_get_extractor",
+                          return_value=self._mock_extractor()):
             dataset_mod.build_dataset(
                 extracted_dir=filing_dir,
                 metadata_path=tmp_path / "meta.jsonl",
@@ -471,6 +497,31 @@ class TestBuildDataset:
 
         lines = (tmp_path / "out.jsonl").read_text().strip().splitlines()
         assert len(lines) == 5
+
+    def test_batch_calls_match_expected_count(self, dataset_mod, tmp_path):
+        """With batch_size=2 and 5 filings, batch_extract_json called 3 times (2+2+1)."""
+        filing_dir = tmp_path / "filings"
+        filing_dir.mkdir()
+        for i in range(5):
+            self._write_filing(filing_dir / f"f{i}.json", {
+                "cik": str(i + 200),
+                "item_1": f"Company {i} makes things. " * 10,
+                "filing_type": "10-K",
+                "filing_date": "2023-01-01",
+                "period_of_report": "2022-12-31",
+                "htm_filing_link": "",
+            })
+
+        mock_extractor = self._mock_extractor()
+        with patch.object(dataset_mod, "_get_extractor", return_value=mock_extractor):
+            dataset_mod.build_dataset(
+                extracted_dir=filing_dir,
+                metadata_path=tmp_path / "meta.jsonl",
+                nace_map_path=None,
+                output_path=tmp_path / "out.jsonl",
+                batch_size=2,
+            )
+        assert mock_extractor.batch_extract_json.call_count == 3  # ceil(5/2)
 
     def test_skips_filings_with_no_item1(self, dataset_mod, tmp_path):
         filing_dir = tmp_path / "filings"
